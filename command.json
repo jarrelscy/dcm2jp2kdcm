@@ -28,7 +28,7 @@
             "name": "compress",
             "description": "Compress any existing DICOM scan resources? If False this will decompress",
             "type": "boolean",
-            "required": false,
+            "required": true,
             "default-value": true,
             "replacement-key": "#COMPRESS#",
             "true-value": "True",
