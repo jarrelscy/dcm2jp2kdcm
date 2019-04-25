@@ -34,7 +34,7 @@ def download(name, pathDict):
             os.symlink(pathDict['absolutePath'], name)
         except:
             fileCopy(pathDict['absolutePath'], name)
-            print 'Copied %s.' % pathDict['absolutePath']
+            print ('Copied %s.' % pathDict['absolutePath'])
     else:
         with open(name, 'wb') as f:
             r = get(pathDict['URI'], stream=True)
@@ -44,7 +44,7 @@ def download(name, pathDict):
                     break
 
                 f.write(block)
-        print 'Downloaded file %s.' % name
+        print ('Downloaded file %s.' % name)
 
 def zipdir(dirPath=None, zipFilePath=None, includeDirInZip=True):
     if not zipFilePath:
@@ -87,7 +87,6 @@ parser.add_argument("--session", help="Session ID", required=True)
 parser.add_argument("--subject", help="Subject Label", required=False)
 parser.add_argument("--project", help="Project", required=False)
 parser.add_argument("--dicomdir", help="Root output directory for DICOM files", required=True)
-parser.add_argument("--niftidir", help="Root output directory for NIFTI files", required=True)
 parser.add_argument("--overwrite", help="Overwrite NIFTI files if they exist")
 parser.add_argument("--upload-by-ref", help="Upload \"by reference\". Only use if your host can read your file system.")
 parser.add_argument("--workflowId", help="Pipeline workflow ID")
@@ -100,29 +99,20 @@ subject = args.subject
 project = args.project
 overwrite = isTrue(args.overwrite)
 dicomdir = args.dicomdir
-niftidir = args.niftidir
 workflowId = args.workflowId
 uploadByRef = isTrue(args.upload_by_ref)
 dcm2niixArgs = unknown_args if unknown_args is not None else []
 
-imgdir = niftidir + "/IMG"
-bidsdir = niftidir + "/BIDS"
+#imgdir = niftidir + "/IMG"
+#bidsdir = niftidir + "/BIDS"
 
 builddir = os.getcwd()
 
 # Set up working directory
 if not os.access(dicomdir, os.R_OK):
-    print 'Making DICOM directory %s' % dicomdir
+    print ('Making DICOM directory %s' % dicomdir)
     os.mkdir(dicomdir)
-if not os.access(niftidir, os.R_OK):
-    print 'Making NIFTI directory %s' % niftidir
-    os.mkdir(niftidir)
-if not os.access(imgdir, os.R_OK):
-    print 'Making NIFTI image directory %s' % imgdir
-    os.mkdir(imgdir)
-if not os.access(bidsdir, os.R_OK):
-    print 'Making NIFTI BIDS directory %s' % bidsdir
-    os.mkdir(bidsdir)
+
 
 # Set up session
 sess = requests.Session()
@@ -135,116 +125,49 @@ def get(url, **kwargs):
         r = sess.get(url, **kwargs)
         r.raise_for_status()
     except (requests.ConnectionError, requests.exceptions.RequestException) as e:
-        print "Request Failed"
-        print "    " + str(e)
+        print ("Request Failed")
+        print ("    " + str(e))
         sys.exit(1)
     return r
 
 if project is None or subject is None:
     # Get project ID and subject ID from session JSON
-    print "Get project and subject ID for session ID %s." % session
+    print ("Get project and subject ID for session ID %s." % session)
     r = get(host + "/data/experiments/%s" % session, params={"format": "json", "handler": "values", "columns": "project,subject_ID"})
     sessionValuesJson = r.json()["ResultSet"]["Result"][0]
     project = sessionValuesJson["project"] if project is None else project
     subjectID = sessionValuesJson["subject_ID"]
-    print "Project: " + project
-    print "Subject ID: " + subjectID
+    print ("Project: " + project)
+    print ("Subject ID: " + subjectID)
 
     if subject is None:
-        print
-        print "Get subject label for subject ID %s." % subjectID
+        print ("Get subject label for subject ID %s." % subjectID)
         r = get(host + "/data/subjects/%s" % subjectID, params={"format": "json", "handler": "values", "columns": "label"})
         subject = r.json()["ResultSet"]["Result"][0]["label"]
-        print "Subject label: " + subject
+        print ("Subject label: " + subject)
 
 # Get list of scan ids
-print
-print "Get scan list for session ID %s." % session
+print ("Get scan list for session ID %s." % session)
 r = get(host + "/data/experiments/%s/scans" % session, params={"format": "json"})
 scanRequestResultList = r.json()["ResultSet"]["Result"]
 scanIDList = [scan['ID'] for scan in scanRequestResultList]
 seriesDescList = [scan['series_description'] for scan in scanRequestResultList]  # { id: sd for (scan['ID'], scan['series_description']) in scanRequestResultList }
-print 'Found scans %s.' % ', '.join(scanIDList)
-print 'Series descriptions %s' % ', '.join(seriesDescList)
+print ('Found scans %s.' % ', '.join(scanIDList))
+print ('Series descriptions %s' % ', '.join(seriesDescList))
 
 # Fall back on scan type if series description field is empty
 if set(seriesDescList) == set(['']):
     seriesDescList = [scan['type'] for scan in scanRequestResultList]
-    print 'Fell back to scan types %s' % ', '.join(seriesDescList)
+    print ('Fell back to scan types %s' % ', '.join(seriesDescList))
 
-# Get site- and project-level configs
-bidsmaplist = []
-print
-print "Get site-wide BIDS map"
-# We don't use the convenience get() method because that throws exceptions when the object is not found.
-r = sess.get(host + "/data/config/bids/bidsmap", params={"contents": True})
-if r.ok:
-    bidsmaptoadd = r.json()
-    for mapentry in bidsmaptoadd:
-        if mapentry not in bidsmaplist:
-            bidsmaplist.append(mapentry)
-else:
-    print "Could not read site-wide BIDS map"
-
-print "Get project BIDS map if one exists"
-r = sess.get(host + "/data/projects/%s/config/bids/bidsmap" % project, params={"contents": True})
-if r.ok:
-    bidsmaptoadd = r.json()
-    for mapentry in bidsmaptoadd:
-        if mapentry not in bidsmaplist:
-            bidsmaplist.append(mapentry)
-else:
-    print "Could not read project BIDS map"
-
-# print "BIDS map: " + json.dumps(bidsmaplist)
-
-# Collapse human-readable JSON to dict for processing
-bidsnamemap = {x['series_description'].lower(): x['bidsname'] for x in bidsmaplist if 'series_description' in x and 'bidsname' in x}
-
-# Map all series descriptions to BIDS names (case insensitive)
-resolved = [bidsnamemap[x.lower()] for x in seriesDescList if x.lower() in bidsnamemap]
-
-# Count occurrences
-bidscount = collections.Counter(resolved)
-
-# Remove multiples
-multiples = {seriesdesc: count for seriesdesc, count in bidscount.viewitems() if count > 1}
 
 # Cheat and reverse scanid and seriesdesc lists so numbering is in the right order
 for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
-    print
-    print 'Beginning process for scan %s.' % scanid
+    print ('Beginning process for scan %s.' % scanid)
     os.chdir(builddir)
-
-    print 'Assigning BIDS name for scan %s.' % scanid
 
     # BIDS subject name
     base = "sub-" + subject + "_"
-
-    if seriesdesc.lower() not in bidsnamemap:
-        print "Series " + seriesdesc + " not found in BIDSMAP"
-        # bidsname = "Z"
-        continue  # Exclude series from processing
-    else:
-        print "Series " + seriesdesc + " matched " + bidsnamemap[seriesdesc.lower()]
-        match = bidsnamemap[seriesdesc.lower()]
-
-    # split before last _
-    splitname = match.split("_")
-
-    # Check for multiples
-    if match in multiples:
-        # insert run-0x
-        run = 'run-%02d' % multiples[match]
-        splitname.insert(len(splitname) - 1, run)
-
-        # decrement count
-        multiples[match] -= 1
-
-        # rejoin as string
-        bidsname = "_".join(splitname)
-    else:
-        bidsname = match
 
     # Get scan resources
     print "Get scan resources for scan %s." % scanid
@@ -252,53 +175,6 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     scanResources = r.json()["ResultSet"]["Result"]
     print 'Found resources %s.' % ', '.join(res["label"] for res in scanResources)
 
-    ##########
-    # Do initial checks to determine if scan should be skipped
-    hasNifti = any([res["label"] == "NIFTI" for res in scanResources])  # Store this for later
-    if hasNifti and not overwrite:
-        print "Scan %s has a preexisting NIFTI resource, and I am running with overwrite=False. Skipping." % scanid
-        continue
-
-    dicomResourceList = [res for res in scanResources if res["label"] == "DICOM"]
-    imaResourceList = [res for res in scanResources if res["format"] == "IMA"]
-
-    if len(dicomResourceList) == 0 and len(imaResourceList) == 0:
-        print "Scan %s has no DICOM or IMA resource." % scanid
-        # scanInfo['hasDicom'] = False
-        continue
-    elif len(dicomResourceList) == 0 and len(imaResourceList) > 1:
-        print "Scan %s has more than one IMA resource and no DICOM resource. Skipping." % scanid
-        # scanInfo['hasDicom'] = False
-        continue
-    elif len(dicomResourceList) > 1 and len(imaResourceList) == 0:
-        print "Scan %s has more than one DICOM resource and no IMA resource. Skipping." % scanid
-        # scanInfo['hasDicom'] = False
-        continue
-    elif len(dicomResourceList) > 1 and len(imaResourceList) > 1:
-        print "Scan %s has more than one DICOM resource and more than one IMA resource. Skipping." % scanid
-        # scanInfo['hasDicom'] = False
-        continue
-
-    dicomResource = dicomResourceList[0] if len(dicomResourceList) > 0 else None
-    imaResource = imaResourceList[0] if len(imaResourceList) > 0 else None
-
-    usingDicom = True if (len(dicomResourceList) == 1) else False
-
-    if dicomResource is not None and dicomResource["file_count"]:
-        if int(dicomResource["file_count"]) == 0:
-            print "DICOM resource for scan %s has no files. Checking IMA resource." % scanid
-            if imaResource["file_count"]:
-                if int(imaResource["file_count"]) == 0:
-                    print "IMA resource for scan %s has no files either. Skipping." % scanid
-                    continue
-            else:
-                print "IMA resource for scan %s has a blank \"file_count\", so I cannot check it to see if there are no files. I am not skipping the scan, but this may lead to errors later if there are no files." % scanid
-    elif imaResource is not None and imaResource["file_count"]:
-        if int(imaResource["file_count"]) == 0:
-            print "IMA resource for scan %s has no files. Skipping." % scanid
-            continue
-    else:
-        print "DICOM and IMA resources for scan %s both have a blank \"file_count\", so I cannot check to see if there are no files. I am not skipping the scan, but this may lead to errors later if there are no files." % scanid
 
     ##########
     # Prepare DICOM directory structure
@@ -385,161 +261,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     print 'Done downloading for scan %s.' % scanid
     print
 
-    ##########
-    # Prepare NIFTI directory structure
-    scanBidsDir = os.path.join(bidsdir, scanid)
-    if not os.path.isdir(scanBidsDir):
-        print 'Creating scan NIFTI BIDS directory %s.' % scanBidsDir
-        os.mkdir(scanBidsDir)
-
-    scanImgDir = os.path.join(imgdir, scanid)
-    if not os.path.isdir(scanImgDir):
-        print 'Creating scan NIFTI image directory %s.' % scanImgDir
-        os.mkdir(scanImgDir)
-
-    # Remove any existing files in the builddir.
-    # This is unlikely to happen in any environment other than testing.
-    for f in os.listdir(scanBidsDir):
-        os.remove(os.path.join(scanBidsDir, f))
-
-    for f in os.listdir(scanImgDir):
-        os.remove(os.path.join(scanImgDir, f))
-
-    # Convert the differences
-    bidsname = base + bidsname
-    print "Base " + base + " series " + seriesdesc + " match " + bidsname
-
-    print 'Converting scan %s to NIFTI...' % scanid
-    # Do some stuff to execute dcm2niix as a subprocess
-
-    if usingDicom:
-        dcm2niix_command = "dcm2niix -b y -z y".split() + dcm2niixArgs + " -f {} -o {} {}".format(bidsname, scanBidsDir, scanDicomDir).split()
-        print "Executing command: " + " ".join(dcm2niix_command)
-        print subprocess.check_output(dcm2niix_command)
-    else:
-        # call dcm2nii for converting ima files
-        print subprocess.check_output("dcm2nii -b @PIPELINE_DIR_PATH@/catalog/DicomToBIDS/resources/dcm2nii.ini -g y -f Y -e N -p N -d N -o {} {}".format(scanBidsDir, scanDicomDir).split())
-
-        #print subprocess.check_output("mv {}/*.nii.gz {}/{}.nii.gz".format(scanBidsDir, scanBidsDir, "bidsname").split())
-
-        # there should only be one file in this folder
-        for files in glob.glob(os.path.join(scanBidsDir, "*.nii.gz")):
-            os.rename(files, os.path.join(scanBidsDir, bidsname + ".nii.gz"))
-
-        # Create BIDS sidecar file from IMA XML
-        imaSessionURL = host + "/data/archive/experiments/%s/scans/%s" % (session, scanid)
-        r = get(imaSessionURL, params={"format": "json"})
-
-        # fields from ima json result
-        imaResultChildren = r.json()["items"][0]["children"][1]["items"][0]["data_fields"]
-        imaResultDataFields = r.json()["items"][0]["data_fields"]
-
-        #fileDimX = imaResultChildren["dimensions/x"] if "dimensions/x" in imaResultChildren else None
-        #fileDimY = imaResultChildren["dimensions/y"] if "dimensions/y" in imaResultChildren else None
-        #fileDimZ = imaResultChildren["dimensions/z"] if "dimensions/z" in imaResultChildren else None
-        #fileDimVolumes = imaResultChildren["dimensions/volumes"] if "dimensions/volumes" in imaResultChildren else None
-        #fileVoxelResX = imaResultChildren["voxelRes/x"] if "voxelRes/x" in imaResultChildren else None
-        #fileVoxelResY = imaResultChildren["voxelRes/y"] if "voxelRes/y" in imaResultChildren else None
-        #fileVoxelResZ = imaResultChildren["voxelRes/z"] if "voxelRes/z" in imaResultChildren else None
-        #fileVoxelResUnits = imaResultChildren["voxelRes/units"] if "voxelRes/units" in imaResultChildren else None
-        #fileOrientation = imaResultChildren["orientation"] if "orientation" in imaResultChildren else None
-        #parametersFovX = imaResultDataFields["parameters/fov/x"] if "parameters/fov/x" in imaResultDataFields else None
-        #parametersFovY = imaResultDataFields["parameters/fov/y"] if "parameters/fov/y" in imaResultDataFields else None
-        #parametersMatrixX = imaResultDataFields["parameters/matrix/x"] if "parameters/matrix/x" in imaResultDataFields else None
-        #parametersMatrixY = imaResultDataFields["parameters/matrix/y"] if "parameters/matrix/y" in imaResultDataFields else None
-        parametersTr = imaResultDataFields["parameters/tr"] if "parameters/tr" in imaResultDataFields else None
-        parametersTe = imaResultDataFields["parameters/te"] if "parameters/te" in imaResultDataFields else None
-        parametersFlip = imaResultDataFields["parameters/flip"] if "parameters/flip" in imaResultDataFields else None
-        #parametersSequence = imaResultDataFields["parameters/sequence"] if "parameters/sequence" in imaResultDataFields else None
-        #parametersOrigin = imaResultDataFields["parameters/origin"] if "parameters/origin" in imaResultDataFields else None
-
-        # Manually added data
-        scannerManufacturer = "Siemens"
-        scannerManufacturerModelName = "Vision"
-        scannerMagneticFieldStrength = 1.5
-        conversionSoftware = "dcm2nii"
-        conversionSoftwareVersion = "2013.06.12"
-
-        # create a BIDS sidecar json file from the data we got
-        json_contents = {}
-
-        # scanner info
-        json_contents['Manufacturer'] = scannerManufacturer
-        json_contents['ManufacturersModelName'] = scannerManufacturerModelName
-        json_contents['MagneticFieldStrength'] = scannerMagneticFieldStrength
-
-        # scan-specific info
-        #json_contents['AcquisitionTime'] = ""
-        #json_contents['SeriesNumber'] = ""
-        json_contents['EchoTime'] = parametersTe
-        json_contents['RepetitionTime'] = parametersTr
-        json_contents['FlipAngle'] = parametersFlip
-
-        json_contents['ConversionSoftware'] = conversionSoftware
-        json_contents['ConversionSoftwareVersion'] = conversionSoftwareVersion
-
-        # output BIDS sidecar file, make sure the name is the same as the .nii.gz output filename
-
-        # get base of bidsname (get name from name.nii.gz) to construct json filename
-        with open(os.path.join(scanBidsDir, bidsname) + ".json", "w+") as outfile:
-            json.dump(json_contents, outfile, indent=4)
-
-    print 'Done.'
-
-    # Move imaging to image directory
-    for f in os.listdir(scanBidsDir):
-        if "nii" in f:
-            os.rename(os.path.join(scanBidsDir, f), os.path.join(scanImgDir, f))
-
-    # Check number of files in image directory, if more than one assume multiple echoes
-    numechoes = len(os.listdir(scanImgDir))  # multiple .nii.gz files will be generated by dcm2niix if there are multiple echoes
-    if numechoes > 1:
-        # Loop through set of folders (IMG and BIDS)
-        for dir in (scanImgDir, scanBidsDir):
-            # Get sorted list of files
-            multiple_echoes = sorted(os.listdir(dir))
-
-            # Divide length of file list by number of echoes to find out how many files in each echo
-            # (Multiband DWI would have BVEC, BVAL, and JSON in BIDS dir for each echo)
-            filesinecho = len(multiple_echoes) / numechoes
-
-            echonumber = 1
-            filenumber = 1
-
-            # Rename files
-            for echo in multiple_echoes:
-                splitname = echo.split("_")
-
-                # Locate run if present in BIDS name
-                runstring = [s for s in splitname if "run" in s]
-
-                if runstring != []:
-                    runindex = splitname.index(runstring[0])
-                    splitname.insert(runindex, "echo-" + str(echonumber))  # insert where run is (will displace run to later position)
-                else:
-                    splitname.insert(-1, "echo-" + str(echonumber))  # insert right before the data type
-
-                # Remove the "a" or other character from before the .nii.gz if not on the first echo
-                if (echonumber > 1):
-                    ending = splitname[-1].split(".")
-                    cleanedtype = ending[0][:-1]
-                    ending[0] = cleanedtype
-                    cleanedname = ".".join(ending)
-                    splitname[-1] = cleanedname
-
-                # Rejoin name
-                echoname = "_".join(splitname)
-
-                # Do file rename
-                os.rename(os.path.join(dir, echo), os.path.join(dir, echoname))
-
-                # When file count rolls over increment echo and continue
-                if filenumber == filesinecho:
-                    echonumber += 1
-                    filenumber = 1  # restart count for new echo
-
-                # Increment file count each time one is renamed
-                filenumber += 1
+    
 
     ##########
     # Upload results
@@ -568,7 +290,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
 
     # Uploading
     print 'Uploading files for scan %s' % scanid
-    queryArgs = {"format": "NIFTI", "content": "NIFTI_RAW", "tags": "BIDS"}
+    queryArgs = {"format": "DICOM", "content": "DICOM_COMPRESSED"}
     if workflowId is not None:
         queryArgs["event_id"] = workflowId
     if uploadByRef:
@@ -584,30 +306,13 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     r.raise_for_status()
 
 
-    queryArgs = {"format": "BIDS", "content": "BIDS", "tags": "BIDS"}
-    if workflowId is not None:
-        queryArgs["event_id"] = workflowId
-    if uploadByRef:
-        queryArgs["reference"] = os.path.abspath(scanBidsDir)
-        r = sess.put(host + "/data/experiments/%s/scans/%s/resources/BIDS/files" % (session, scanid), params=queryArgs)
-    else:
-        queryArgs["extract"] = True
-        (t, tempFilePath) = tempfile.mkstemp(suffix='.zip')
-        zipdir(dirPath=os.path.abspath(scanBidsDir), zipFilePath=tempFilePath, includeDirInZip=False)
-        files = {'file': open(tempFilePath, 'rb')}
-        r = sess.put(host + "/data/experiments/%s/scans/%s/resources/BIDS/files" % (session, scanid), params=queryArgs, files=files)
-        os.remove(tempFilePath)
-    r.raise_for_status()
-
     ##########
     # Clean up input directory
-    print
     print 'Cleaning up %s directory.' % scanDicomDir
     for f in os.listdir(scanDicomDir):
         os.remove(os.path.join(scanDicomDir, f))
     os.rmdir(scanDicomDir)
 
-    print
     print 'All done with image conversion.'
 
 ##########
