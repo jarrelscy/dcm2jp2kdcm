@@ -5,7 +5,7 @@
     "schema-version": "1.0",
     "type": "docker",
     "image": "xnat/dcm2jp2k-session:1.0",
-    "command-line": "python dcm2jp2k.py #SESSION_ID# #OVERWRITE# --host $XNAT_HOST --user $XNAT_USER --pass $XNAT_PASS --upload-by-ref False --dicomdir /dicom ",
+    "command-line": "python dcm2jp2k.py #SESSION_ID# #COMPRESS# --host $XNAT_HOST --user $XNAT_USER --pass $XNAT_PASS --upload-by-ref False --dicomdir /dicom ",
     "workdir": "/src",
     "override-entrypoint": true,
     "mounts": [
@@ -25,15 +25,15 @@
             "command-line-flag": "--session"
         },
         {
-            "name": "overwrite",
-            "description": "Overwrite any existing DICOM scan resources?",
+            "name": "compress",
+            "description": "Compress any existing DICOM scan resources? If False this will decompress",
             "type": "boolean",
             "required": false,
             "default-value": true,
-            "replacement-key": "#OVERWRITE#",
+            "replacement-key": "#COMPRESS#",
             "true-value": "True",
             "false-value": "False",
-            "command-line-flag": "--overwrite"
+            "command-line-flag": "--compress"
         }
     ],
     "outputs": [],
