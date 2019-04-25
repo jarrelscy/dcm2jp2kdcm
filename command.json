@@ -5,7 +5,7 @@
     "schema-version": "1.0",
     "type": "docker",
     "image": "xnat/dcm2jp2k-session:1.0",
-    "command-line": "python dcm2jp2k.py #SESSION_ID# #OVERWRITE# --host $XNAT_HOST --user $XNAT_USER --pass $XNAT_PASS --upload-by-ref False --dicomdir /dicom --niftidir /nifti",
+    "command-line": "python dcm2jp2k.py #SESSION_ID# #OVERWRITE# --host $XNAT_HOST --user $XNAT_USER --pass $XNAT_PASS --upload-by-ref False --dicomdir /dicom ",
     "workdir": "/src",
     "override-entrypoint": true,
     "mounts": [
