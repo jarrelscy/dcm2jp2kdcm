@@ -9,11 +9,14 @@ import subprocess
 import time
 import zipfile
 import tempfile
+import shutil
 from shutil import copy as fileCopy
 import pydicom
 import glymur
+glymur.set_option('lib.num_threads', 32)
 from collections import OrderedDict
 import requests.packages.urllib3
+import numpy as np
 requests.packages.urllib3.disable_warnings()
 
 
@@ -79,11 +82,10 @@ def zipdir(dirPath=None, zipFilePath=None, includeDirInZip=True):
             outFile.writestr(zipInfo, "")
     outFile.close()
 
-BIDSVERSION = "1.0.1"
 
 parser = argparse.ArgumentParser(description="Run dcm2niix on every file in a session")
-parser.add_argument("--host", default="https://cnda.wustl.edu", help="CNDA host", required=True)
-parser.add_argument("--user", help="CNDA username", required=True)
+parser.add_argument("--host", default="http://ahmldicom01.baysidehealth.intra", help="XNAT host", required=True)
+parser.add_argument("--user", help="XNAT username", required=True)
 parser.add_argument("--password", help="Password", required=True)
 parser.add_argument("--session", help="Session ID", required=True)
 parser.add_argument("--subject", help="Subject Label", required=False)
@@ -101,6 +103,7 @@ subject = args.subject
 project = args.project
 overwrite = isTrue(args.overwrite)
 dicomdir = args.dicomdir
+outputdir = dicomdir+'-output'
 workflowId = args.workflowId
 uploadByRef = isTrue(args.upload_by_ref)
 dcm2niixArgs = unknown_args if unknown_args is not None else []
@@ -114,7 +117,10 @@ builddir = os.getcwd()
 if not os.access(dicomdir, os.R_OK):
     print ('Making DICOM directory %s' % dicomdir)
     os.mkdir(dicomdir)
-
+# Set up working directory
+if not os.access(outputdir, os.R_OK):
+    print ('Making output DICOM directory %s' % outputdir)
+    os.mkdir(outputdir)
 
 # Set up session
 sess = requests.Session()
@@ -182,6 +188,9 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     if not os.path.isdir(scanDicomDir):
         print ('Making scan DICOM directory %s.' % scanDicomDir)
         os.mkdir(scanDicomDir)
+        
+    
+        
     # Remove any existing files in the builddir.
     # This is unlikely to happen in any environment other than testing.
     for f in os.listdir(scanDicomDir):
@@ -221,8 +230,8 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
 
     os.chdir(builddir)
     print ('Done downloading for scan %s.' % scanid)
-
-    
+    print ('Downloaded files:')
+    print ('\n'.join(os.listdir(scanDicomDir)))
 
     ##########
     # Upload results
@@ -233,26 +242,57 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
         queryArgs = {}
         if workflowId is not None:
             queryArgs["event_id"] = workflowId
+        print ('Deleting previous DICOM files')
         r = sess.delete(host + "/data/experiments/%s/scans/%s/resources/DICOM" % (session, scanid), params=queryArgs)
         r.raise_for_status()
     except (requests.ConnectionError, requests.exceptions.RequestException) as e:
         print ("There was a problem deleting")
         print ("    " + str(e))
         print ("Skipping upload for scan %s." % scanid)
-        continue
-
+        
+    
+    # Prepare output DICOM directory structure
+    scanOutputDicomDir = os.path.join(outputdir, scanid)
+    shutil.copytree(scanDicomDir, scanOutputDicomDir)
+    passed = True
+    for root, dirs, files in os.walk(scanOutputDicomDir, topdown=False):
+        for name in files:
+            try:
+                file = os.path.join(root, name)
+                print (file)
+                with tempfile.NamedTemporaryFile() as f:    
+                    ds = pydicom.read_file(file)
+                    glymur.Jp2k(f.name, ds.pixel_array.astype(np.uint16))
+                    f.seek(0)
+                    ds.PixelData = pydicom.encaps.encapsulate(list(pydicom.encaps.fragment_frame(f.read())))
+                    ds[(0x7FE0,0x0010)].VR = 'OB' #encapsulated data needs to be OB https://pydicom.github.io/pydicom/stable/_modules/pydicom/filewriter.html
+                    ds[(0x7FE0,0x0010)].is_undefined_length = True 
+                    ds.file_meta.TransferSyntaxUID = pydicom.uid.JPEG2000Lossless
+                    ds.PixelRepresentation = 0
+                    f.seek(0)    
+                    ds.save_as(file, write_like_original=False)
+            except:
+                print (traceback.format_exc())
+                passed = False
+               
+               
+    if passed:
+        upload_dir = scanOutputDicomDir
+    else:
+        upload_dir = scanDicomDir
+    
     # Uploading
     print ('Uploading files for scan %s' % scanid)
-    queryArgs = {"format": "DICOM", "content": "DICOM_COMPRESSED"}
+    queryArgs = {"format": "DICOM", "content": "DICOM"}
     if workflowId is not None:
         queryArgs["event_id"] = workflowId
     if uploadByRef:
-        queryArgs["reference"] = os.path.abspath(scanDicomDir)
+        queryArgs["reference"] = os.path.abspath(upload_dir)
         r = sess.put(host + "/data/experiments/%s/scans/%s/resources/DICOM/files" % (session, scanid), params=queryArgs)
     else:
         queryArgs["extract"] = True
         (t, tempFilePath) = tempfile.mkstemp(suffix='.zip')
-        zipdir(dirPath=os.path.abspath(scanDicomDir), zipFilePath=tempFilePath, includeDirInZip=False)
+        zipdir(dirPath=os.path.abspath(upload_dir), zipFilePath=tempFilePath, includeDirInZip=False)
         files = {'file': open(tempFilePath, 'rb')}
         r = sess.put(host + "/data/experiments/%s/scans/%s/resources/DICOM/files" % (session, scanid), params=queryArgs, files=files)
         os.remove(tempFilePath)
