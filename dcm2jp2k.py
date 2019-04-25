@@ -10,6 +10,8 @@ import time
 import zipfile
 import tempfile
 from shutil import copy as fileCopy
+import pydicom
+import glymur
 from collections import OrderedDict
 import requests.packages.urllib3
 requests.packages.urllib3.disable_warnings()
@@ -166,22 +168,19 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     print ('Beginning process for scan %s.' % scanid)
     os.chdir(builddir)
 
-    # BIDS subject name
-    base = "sub-" + subject + "_"
 
     # Get scan resources
-    print "Get scan resources for scan %s." % scanid
+    print ("Get scan resources for scan %s." % scanid)
     r = get(host + "/data/experiments/%s/scans/%s/resources" % (session, scanid), params={"format": "json"})
     scanResources = r.json()["ResultSet"]["Result"]
-    print 'Found resources %s.' % ', '.join(res["label"] for res in scanResources)
+    print ('Found resources %s.' % ', '.join(res["label"] for res in scanResources))
 
 
     ##########
     # Prepare DICOM directory structure
-    print
     scanDicomDir = os.path.join(dicomdir, scanid)
     if not os.path.isdir(scanDicomDir):
-        print 'Making scan DICOM directory %s.' % scanDicomDir
+        print ('Making scan DICOM directory %s.' % scanDicomDir)
         os.mkdir(scanDicomDir)
     # Remove any existing files in the builddir.
     # This is unlikely to happen in any environment other than testing.
@@ -189,32 +188,13 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
         os.remove(os.path.join(scanDicomDir, f))
 
     ##########
-    # Get list of DICOMs/IMAs
-
-    # set resourceid. This will only be set if hasIma is true and we've found a resource id
-    resourceid = None
-
-    if not usingDicom:
-
-        print 'Get IMA resource id for scan %s.' % scanid
-        r = get(host + "/data/experiments/%s/scans/%s/resources" % (session, scanid), params={"format": "json"})
-        resourceDict = {resource['format']: resource['xnat_abstractresource_id'] for resource in r.json()["ResultSet"]["Result"]}
-
-        if resourceDict["IMA"]:
-            resourceid = resourceDict["IMA"]
-        else:
-            print "Couldn't get xnat_abstractresource_id for IMA file list."
+    # Get list of DICOMs
 
     # Deal with DICOMs
-    print 'Get list of DICOM files for scan %s.' % scanid
+    print ('Get list of DICOM files for scan %s.' % scanid)
 
-    if usingDicom:
-        filesURL = host + "/data/experiments/%s/scans/%s/resources/DICOM/files" % (session, scanid)
-    elif resourceid is not None:
-        filesURL = host + "/data/experiments/%s/scans/%s/resources/%s/files" % (session, scanid, resourceid)
-    else:
-        print "Trying to convert IMA files but there is no resource id available. Skipping."
-        continue
+    filesURL = host + "/data/experiments/%s/scans/%s/resources/DICOM/files" % (session, scanid)
+    
 
     r = get(filesURL, params={"format": "json"})
     # I don't like the results being in a list, so I will build a dict keyed off file name
@@ -227,7 +207,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
 
     ##########
     # Download DICOMs
-    print "Downloading files for scan %s." % scanid
+    print ("Downloading files for scan %s." % scanid)
     os.chdir(scanDicomDir)
 
     # Check secondary
@@ -235,189 +215,55 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     # If the headers indicate it is a secondary capture, we will skip this series.
     dicomFileList = dicomFileDict.items()
 
-    (name, pathDict) = dicomFileList[0]
-    download(name, pathDict)
-
-    if usingDicom:
-        print 'Checking modality in DICOM headers of file %s.' % name
-        d = dicomLib.read_file(name)
-        modalityHeader = d.get((0x0008, 0x0060), None)
-        if modalityHeader:
-            print 'Modality header: %s' % modalityHeader
-            modality = modalityHeader.value.strip("'").strip('"')
-            if modality == 'SC' or modality == 'SR':
-                print 'Scan %s is a secondary capture. Skipping.' % scanid
-                continue
-        else:
-            print 'Could not read modality from DICOM headers. Skipping.'
-            continue
-
     ##########
-    # Download remaining DICOMs
-    for name, pathDict in dicomFileList[1:]:
+    for name, pathDict in dicomFileList:
         download(name, pathDict)
 
     os.chdir(builddir)
-    print 'Done downloading for scan %s.' % scanid
-    print
+    print ('Done downloading for scan %s.' % scanid)
 
     
 
     ##########
     # Upload results
-    print
-    print 'Preparing to upload files for scan %s.' % scanid
+    print ('Preparing to upload files for scan %s.' % scanid)
 
-    # If we have a NIFTI resource and we've reached this point, we know overwrite=True.
-    # We should delete the existing NIFTI resource.
-    if hasNifti:
-        print "Scan %s has a preexisting NIFTI resource. Deleting it now." % scanid
-
-        try:
-            queryArgs = {}
-            if workflowId is not None:
-                queryArgs["event_id"] = workflowId
-            r = sess.delete(host + "/data/experiments/%s/scans/%s/resources/NIFTI" % (session, scanid), params=queryArgs)
-            r.raise_for_status()
-
-            r = sess.delete(host + "/data/experiments/%s/scans/%s/resources/BIDS" % (session, scanid), params=queryArgs)
-            r.raise_for_status()
-        except (requests.ConnectionError, requests.exceptions.RequestException) as e:
-            print "There was a problem deleting"
-            print "    " + str(e)
-            print "Skipping upload for scan %s." % scanid
-            continue
+    # We should delete the existing DICOM resource.
+    try:
+        queryArgs = {}
+        if workflowId is not None:
+            queryArgs["event_id"] = workflowId
+        r = sess.delete(host + "/data/experiments/%s/scans/%s/resources/DICOM" % (session, scanid), params=queryArgs)
+        r.raise_for_status()
+    except (requests.ConnectionError, requests.exceptions.RequestException) as e:
+        print ("There was a problem deleting")
+        print ("    " + str(e))
+        print ("Skipping upload for scan %s." % scanid)
+        continue
 
     # Uploading
-    print 'Uploading files for scan %s' % scanid
+    print ('Uploading files for scan %s' % scanid)
     queryArgs = {"format": "DICOM", "content": "DICOM_COMPRESSED"}
     if workflowId is not None:
         queryArgs["event_id"] = workflowId
     if uploadByRef:
-        queryArgs["reference"] = os.path.abspath(scanImgDir)
-        r = sess.put(host + "/data/experiments/%s/scans/%s/resources/NIFTI/files" % (session, scanid), params=queryArgs)
+        queryArgs["reference"] = os.path.abspath(scanDicomDir)
+        r = sess.put(host + "/data/experiments/%s/scans/%s/resources/DICOM/files" % (session, scanid), params=queryArgs)
     else:
         queryArgs["extract"] = True
         (t, tempFilePath) = tempfile.mkstemp(suffix='.zip')
-        zipdir(dirPath=os.path.abspath(scanImgDir), zipFilePath=tempFilePath, includeDirInZip=False)
+        zipdir(dirPath=os.path.abspath(scanDicomDir), zipFilePath=tempFilePath, includeDirInZip=False)
         files = {'file': open(tempFilePath, 'rb')}
-        r = sess.put(host + "/data/experiments/%s/scans/%s/resources/NIFTI/files" % (session, scanid), params=queryArgs, files=files)
+        r = sess.put(host + "/data/experiments/%s/scans/%s/resources/DICOM/files" % (session, scanid), params=queryArgs, files=files)
         os.remove(tempFilePath)
     r.raise_for_status()
 
 
     ##########
     # Clean up input directory
-    print 'Cleaning up %s directory.' % scanDicomDir
+    print ('Cleaning up %s directory.' % scanDicomDir)
     for f in os.listdir(scanDicomDir):
         os.remove(os.path.join(scanDicomDir, f))
     os.rmdir(scanDicomDir)
 
-    print 'All done with image conversion.'
-
-##########
-# Generate session-level metadata files
-previouschanges = ""
-
-# Remove existing files if they are there
-print "Check for presence of session-level BIDS data"
-r = get(host + "/data/experiments/%s/resources" % session, params={"format": "json"})
-sessionResources = r.json()["ResultSet"]["Result"]
-print 'Found resources %s.' % ', '.join(res["label"] for res in sessionResources)
-
-# Do initial checks to determine if session-level BIDS metadata is present
-hasSessionBIDS = any([res["label"] == "BIDS" for res in sessionResources])
-
-if hasSessionBIDS:
-    print "Session has preexisting BIDS resource. Deleting previous BIDS metadata if present."
-
-    # Consider making CHANGES a real, living changelog
-    # r = get( host + "/data/experiments/%s/resources/BIDS/files/CHANGES"%(session) )
-    # previouschanges = r.text
-    # print previouschanges
-
-    try:
-        queryArgs = {}
-        if workflowId is not None:
-            queryArgs["event_id"] = workflowId
-
-        r = sess.delete(host + "/data/experiments/%s/resources/BIDS" % session, params=queryArgs)
-        r.raise_for_status()
-        uploadSessionBids = True
-    except (requests.ConnectionError, requests.exceptions.RequestException) as e:
-        print "There was a problem deleting"
-        print "    " + str(e)
-        print "Skipping upload for session-level files."
-        uploadSessionBids = False
-
-    print "Done"
-    print ""
-
-# Fetch metadata from project
-print "Fetching project {} metadata".format(project)
-rawprojectdata = get(host + "/data/projects/%s" % project, params={"format": "json"})
-projectdata = rawprojectdata.json()
-print "Got project metadata\n"
-
-# Build dataset description
-print "Constructing BIDS data"
-dataset_description = OrderedDict()
-dataset_description['Name'] = project
-
-dataset_description['BIDSVersion'] = BIDSVERSION
-
-# License- to be added later on after discussion of sensible default options
-# dataset_description['License'] = None
-
-# Compile investigators and PI into names list
-invnames = []
-invfield = [x for x in projectdata["items"][0]["children"] if x["field"] == "investigators/investigator"]
-print str(invfield)
-
-if invfield != []:
-    invs = invfield[0]["items"]
-
-    for i in invs:
-        invnames.append(" ".join([i["data_fields"]["firstname"], i["data_fields"]["lastname"]]))
-
-pifield = [x for x in projectdata["items"][0]["children"] if x["field"] == "PI"]
-
-if pifield != []:
-    pi = pifield[0]["items"][0]["data_fields"]
-    piname = " ".join([pi["firstname"], pi["lastname"]])
-
-    if piname in invnames:
-        invnames.remove(piname)
-
-    invnames.insert(0, piname + " (PI)")
-
-if invnames != []:
-    dataset_description['Authors'] = invnames
-
-# Other metadata - to be added later on
-# dataset_description['Acknowledgments'] = None
-# dataset_description['HowToAcknowledge'] = None
-# dataset_description['Funding'] = None
-# dataset_description['ReferencesAndLinks'] = None
-
-# Session identifier
-dataset_description['DatasetDOI'] = host + '/data/experiments/' + session
-
-# Upload
-queryArgs = {"format": "BIDS", "content": "BIDS", "tags": "BIDS", "inbody": "true"}
-if workflowId is not None:
-    queryArgs["event_id"] = workflowId
-
-r = sess.put(host + "/data/experiments/%s/resources/BIDS/files/dataset_description.json" % session, json=dataset_description, params=queryArgs)
-r.raise_for_status()
-
-# Generate CHANGES
-changes = "1.0 " + time.strftime("%Y-%m-%d") + "\n\n - Initial release."
-
-# Upload
-h = {"content-type": "text/plain"}
-r = sess.put(host + "/data/experiments/%s/resources/BIDS/files/CHANGES" % session, data=changes, params=queryArgs, headers=h)
-r.raise_for_status()
-
-# All done
-print 'All done with session-level metadata.'
+    print ('All done with image conversion.')
