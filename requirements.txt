@@ -1,0 +1,1 @@
+-f git+https://github.com/jarrelscy/pydicom.git
