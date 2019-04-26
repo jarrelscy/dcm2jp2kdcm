@@ -12,6 +12,7 @@ import tempfile
 import shutil
 from shutil import copy as fileCopy
 import pydicom
+import code
 import glymur
 glymur.set_option('lib.num_threads', 32)
 from collections import OrderedDict
@@ -203,7 +204,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     # Deal with DICOMs
     print ('Get list of DICOM files for scan %s.' % scanid)
 
-    filesURL = host + "/data/experiments/%s/scans/%s/resources/DICOM/files" % (session, scanid)
+    filesURL = host + "/data/experiments/%s/scans/%s/resources/DICOM%s/files" % (session, scanid, '_COMPRESSED' if not compress else '')
     
 
     r = get(filesURL, params={"format": "json"})
@@ -239,17 +240,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     print ('Preparing to upload files for scan %s.' % scanid)
 
     # We should delete the existing DICOM resource.
-    try:
-        queryArgs = {}
-        if workflowId is not None:
-            queryArgs["event_id"] = workflowId
-        print ('Deleting previous DICOM files')
-        r = sess.delete(host + "/data/experiments/%s/scans/%s/resources/DICOM" % (session, scanid), params=queryArgs)
-        r.raise_for_status()
-    except (requests.ConnectionError, requests.exceptions.RequestException) as e:
-        print ("There was a problem deleting")
-        print ("    " + str(e))
-        print ("Skipping upload for scan %s." % scanid)
+    
         
     try:
         # Prepare output DICOM directory structure
@@ -260,7 +251,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
             for name in files:
                 try:
                     file = os.path.join(root, name)
-                    print (file)
+                    print (file, compress)
                     if compress:
                         with tempfile.NamedTemporaryFile() as f:    
                             ds = pydicom.read_file(file)
@@ -287,27 +278,51 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     except:
         passed = False
                
-    if passed:
-        upload_dir = scanOutputDicomDir
-    else:
-        upload_dir = scanDicomDir
-    
-    # Uploading
-    print ('Uploading files for scan %s' % scanid)
-    queryArgs = {"format": "DICOM", "content": "DICOM"}
-    if workflowId is not None:
-        queryArgs["event_id"] = workflowId
-    if uploadByRef:
-        queryArgs["reference"] = os.path.abspath(upload_dir)
-        r = sess.put(host + "/data/experiments/%s/scans/%s/resources/DICOM/files" % (session, scanid), params=queryArgs)
-    else:
-        queryArgs["extract"] = True
-        (t, tempFilePath) = tempfile.mkstemp(suffix='.zip')
-        zipdir(dirPath=os.path.abspath(upload_dir), zipFilePath=tempFilePath, includeDirInZip=False)
-        files = {'file': open(tempFilePath, 'rb')}
-        r = sess.put(host + "/data/experiments/%s/scans/%s/resources/DICOM/files" % (session, scanid), params=queryArgs, files=files)
-        os.remove(tempFilePath)
-    r.raise_for_status()
+    if passed: 
+        upload_dir = scanOutputDicomDir 
+        
+        
+        
+        for count in range(2):
+            try:
+                try:
+                    queryArgs = {}
+                    if workflowId is not None:
+                        queryArgs["event_id"] = workflowId
+                    print ('Deleting previous DICOM files')
+                    r = sess.delete(host + "/data/experiments/%s/scans/%s/resources/DICOM%s" % (session, scanid, '_COMPRESSED' if not compress else ''), params=queryArgs)
+                    r.raise_for_status()
+                except (requests.ConnectionError, requests.exceptions.RequestException) as e:
+                    print ("There was a problem deleting")
+                    print ("    " + str(e))
+                    print ("Skipping upload for scan %s." % scanid)
+                
+                #time.sleep(0.5)
+                print ('Uploading files for scan %s' % scanid)
+                queryArgs = {"format": "DICOM", "content": "DICOM"}
+                if workflowId is not None:
+                    queryArgs["event_id"] = workflowId
+                if uploadByRef:
+                    queryArgs["reference"] = os.path.abspath(upload_dir)
+                    r = sess.put(host + "/data/experiments/%s/scans/%s/resources/DICOM%s/files" % (session, scanid, '_COMPRESSED' if compress else ''), params=queryArgs)
+                    r.raise_for_status()
+                else:
+                    queryArgs["extract"] = True
+                    queryArgs["overwrite"] = True
+                    (t, tempFilePath) = tempfile.mkstemp(suffix='.zip')
+                    zipdir(dirPath=os.path.abspath(upload_dir), zipFilePath=tempFilePath, includeDirInZip=False)
+                    files = {'file': open(tempFilePath, 'rb')}
+                    r = sess.post(host + "/data/experiments/%s/scans/%s/resources/DICOM%s/files" % (session, scanid, '_COMPRESSED' if compress else ''), params=queryArgs, files=files)
+                    r.raise_for_status()
+                    os.remove(tempFilePath)
+                
+                break
+            except:                
+                traceback.print_exc()
+                #code.interact(local=locals())
+                upload_dir = scanDicomDir                 
+                compress = not compress 
+                
 
 
     ##########
