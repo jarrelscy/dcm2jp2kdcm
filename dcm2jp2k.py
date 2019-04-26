@@ -283,45 +283,45 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
         
         
         
-        for count in range(2):
+        try:
+            
+            
+            #time.sleep(0.5)
+            print ('Uploading files for scan %s' % scanid)
+            queryArgs = {"format": "DICOM", "content": "DICOM"}
+            if workflowId is not None:
+                queryArgs["event_id"] = workflowId
+            if uploadByRef:
+                queryArgs["reference"] = os.path.abspath(upload_dir)
+                r = sess.put(host + "/data/experiments/%s/scans/%s/resources/DICOM%s/files" % (session, scanid, '_COMPRESSED' if compress else ''), params=queryArgs)
+                r.raise_for_status()
+            else:
+                queryArgs["extract"] = True
+                queryArgs["overwrite"] = True
+                (t, tempFilePath) = tempfile.mkstemp(suffix='.zip')
+                zipdir(dirPath=os.path.abspath(upload_dir), zipFilePath=tempFilePath, includeDirInZip=False)
+                files = {'file': open(tempFilePath, 'rb')}
+                r = sess.post(host + "/data/experiments/%s/scans/%s/resources/DICOM%s/files" % (session, scanid, '_COMPRESSED' if compress else ''), params=queryArgs, files=files)
+                r.raise_for_status()
+                os.remove(tempFilePath)
+            
+            # delete AFTER upload so if the upload fails the delete doesn't go through. 
             try:
-                try:
-                    queryArgs = {}
-                    if workflowId is not None:
-                        queryArgs["event_id"] = workflowId
-                    print ('Deleting previous DICOM files')
-                    r = sess.delete(host + "/data/experiments/%s/scans/%s/resources/DICOM%s" % (session, scanid, '_COMPRESSED' if not compress else ''), params=queryArgs)
-                    r.raise_for_status()
-                except (requests.ConnectionError, requests.exceptions.RequestException) as e:
-                    print ("There was a problem deleting")
-                    print ("    " + str(e))
-                    print ("Skipping upload for scan %s." % scanid)
-                
-                #time.sleep(0.5)
-                print ('Uploading files for scan %s' % scanid)
-                queryArgs = {"format": "DICOM", "content": "DICOM"}
+                queryArgs = {} 
                 if workflowId is not None:
                     queryArgs["event_id"] = workflowId
-                if uploadByRef:
-                    queryArgs["reference"] = os.path.abspath(upload_dir)
-                    r = sess.put(host + "/data/experiments/%s/scans/%s/resources/DICOM%s/files" % (session, scanid, '_COMPRESSED' if compress else ''), params=queryArgs)
-                    r.raise_for_status()
-                else:
-                    queryArgs["extract"] = True
-                    queryArgs["overwrite"] = True
-                    (t, tempFilePath) = tempfile.mkstemp(suffix='.zip')
-                    zipdir(dirPath=os.path.abspath(upload_dir), zipFilePath=tempFilePath, includeDirInZip=False)
-                    files = {'file': open(tempFilePath, 'rb')}
-                    r = sess.post(host + "/data/experiments/%s/scans/%s/resources/DICOM%s/files" % (session, scanid, '_COMPRESSED' if compress else ''), params=queryArgs, files=files)
-                    r.raise_for_status()
-                    os.remove(tempFilePath)
+                print ('Deleting previous DICOM files')
+                r = sess.delete(host + "/data/experiments/%s/scans/%s/resources/DICOM%s" % (session, scanid, '_COMPRESSED' if not compress else ''), params=queryArgs)
+                r.raise_for_status()
+            except (requests.ConnectionError, requests.exceptions.RequestException) as e:
+                print ("There was a problem deleting")
+                print ("    " + str(e))
+                print ("Skipping upload for scan %s." % scanid)
                 
-                break
-            except:                
-                traceback.print_exc()
-                #code.interact(local=locals())
-                upload_dir = scanDicomDir                 
-                compress = not compress 
+            break
+        except:                
+            traceback.print_exc()
+            #code.interact(local=locals())
                 
 
 
