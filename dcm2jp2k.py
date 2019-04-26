@@ -259,7 +259,12 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
                                 add = -np.min(ds.pixel_array)
                                 ds.pixel_array += add
                                 ds.RescaleIntercept -= add
-                            glymur.Jp2k(f.name, ds.pixel_array.astype(np.uint16))
+                                
+                            
+                            type, bitsstored = (np.uint16, 16) if int(ds.BitsStored) > 8 else (np.uint8, 8)
+                            ds.BitsStored = bitsstored
+                            ds.BitsAllocated = bitsstored
+                            glymur.Jp2k(f.name, ds.pixel_array.astype(type))
                             f.seek(0)
                             ds.PixelData = pydicom.encaps.encapsulate(list(pydicom.encaps.fragment_frame(f.read())))
                             ds[(0x7FE0,0x0010)].VR = 'OB' #encapsulated data needs to be OB https://pydicom.github.io/pydicom/stable/_modules/pydicom/filewriter.html
@@ -277,7 +282,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
                     passed = False
     except:
         passed = False
-               
+    failed = None
     if passed: 
         upload_dir = scanOutputDicomDir 
         
@@ -320,7 +325,8 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
                 
             break
         except:                
-            traceback.print_exc()
+            failed = traceback.format_exc()
+            
             #code.interact(local=locals())
                 
 
@@ -333,3 +339,5 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     os.rmdir(scanDicomDir)
 
     print ('All done with image conversion.')
+    if failed is not None:
+        raise Exception(failed)
