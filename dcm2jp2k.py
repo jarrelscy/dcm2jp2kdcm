@@ -170,7 +170,7 @@ if set(seriesDescList) == set(['']):
     seriesDescList = [scan['type'] for scan in scanRequestResultList]
     print ('Fell back to scan types %s' % ', '.join(seriesDescList))
 
-
+failed = None
 # Cheat and reverse scanid and seriesdesc lists so numbering is in the right order
 for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     print ('Beginning process for scan %s.' % scanid)
@@ -205,7 +205,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     print ('Get list of DICOM files for scan %s.' % scanid)
 
     filesURL = host + "/data/experiments/%s/scans/%s/resources/DICOM%s/files" % (session, scanid, '_COMPRESSED' if not compress else '')
-    
+    print (filesURL)
 
     r = get(filesURL, params={"format": "json"})
     # I don't like the results being in a list, so I will build a dict keyed off file name
@@ -264,6 +264,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
                             type, bitsstored = (np.uint16, 16) if int(ds.BitsStored) > 8 else (np.uint8, 8)
                             ds.BitsStored = bitsstored
                             ds.BitsAllocated = bitsstored
+                            ds.HighBit = bitsstored-1
                             glymur.Jp2k(f.name, ds.pixel_array.astype(type))
                             f.seek(0)
                             ds.PixelData = pydicom.encaps.encapsulate(list(pydicom.encaps.fragment_frame(f.read())))
@@ -282,7 +283,7 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
                     passed = False
     except:
         passed = False
-    failed = None
+    
     if passed: 
         upload_dir = scanOutputDicomDir 
         
@@ -321,9 +322,8 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
             except (requests.ConnectionError, requests.exceptions.RequestException) as e:
                 print ("There was a problem deleting")
                 print ("    " + str(e))
-                print ("Skipping upload for scan %s." % scanid)
-                
-            break
+                print ("Skipping upload for scan %s." % scanid)                
+            
         except:                
             failed = traceback.format_exc()
             
@@ -339,5 +339,5 @@ for scanid, seriesdesc in zip(reversed(scanIDList), reversed(seriesDescList)):
     os.rmdir(scanDicomDir)
 
     print ('All done with image conversion.')
-    if failed is not None:
-        raise Exception(failed)
+if failed is not None:
+    raise Exception(failed)
